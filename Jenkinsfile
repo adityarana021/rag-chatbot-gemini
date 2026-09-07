@@ -2,10 +2,11 @@ pipeline {
     agent any
 
     environment {
-    AWS_REGION = 'us-east-1'
-    ECR_REPOSITORY = '127372371582.dkr.ecr.us-east-1.amazonaws.com/rag-chatbot'
-    IMAGE_TAG = "build-${BUILD_NUMBER}"
-}
+        AWS_REGION = 'us-east-1'
+        ECR_REGISTRY = '127372371582.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPOSITORY = '127372371582.dkr.ecr.us-east-1.amazonaws.com/rag-chatbot'
+        IMAGE_TAG = "build-${BUILD_NUMBER}"
+    }
 
     stages {
 
@@ -40,15 +41,17 @@ pipeline {
                 '''
             }
         }
+
         stage('ECR Login') {
             steps {
                 sh '''
                     aws ecr get-login-password --region ${AWS_REGION} | \
-                    docker login --username AWS --password-stdin ${ECR_REPOSITORY}
+                    docker login --username AWS --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
-         stage('Docker Push') {
+
+        stage('Docker Push') {
             steps {
                 sh '''
                     docker push ${ECR_REPOSITORY}:${IMAGE_TAG}
