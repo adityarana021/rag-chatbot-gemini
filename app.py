@@ -1,10 +1,14 @@
 import streamlit as st
 from PyPDF2 import PdfReader
 import os
+import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+
 import chromadb
 from chromadb.config import Settings
+
 from typing import List
 from dotenv import load_dotenv
 
@@ -22,7 +26,7 @@ if not gemini_api_key:
         "Gemini API Key not provided. Please provide a valid GEMINI_API_KEY."
     )
 
-genai.configure(api_key=gemini_api_key)
+client = genai.Client(api_key=gemini_api_key)
 
 
 # =========================================================
@@ -93,42 +97,63 @@ def split_text(text, max_chunk_size=500):
 
 class GeminiEmbeddingFunction:
 
-    # Required by newer ChromaDB versions
     def name(self):
         return "gemini_embedding"
 
+    # -----------------------------------------------------
     # Used when adding PDF documents to ChromaDB
+    # -----------------------------------------------------
+
     def __call__(self, input: List[str]):
 
         embeddings = []
 
         for text in input:
 
-            embedding = genai.embed_content(
-                model="models/gemini-embedding-001",
-                content=text,
-                task_type="retrieval_document",
-                title="Custom query"
-            )["embedding"]
+            result = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                    title="Custom query"
+                )
+            )
 
-            embeddings.append(embedding)
+            embeddings.append(
+                result.embeddings[0].values
+            )
 
         return embeddings
 
+    # -----------------------------------------------------
     # Used when searching/querying ChromaDB
+    # -----------------------------------------------------
+
     def embed_query(self, input: List[str]):
+
+        start = time.time()
 
         embeddings = []
 
         for text in input:
 
-            embedding = genai.embed_content(
-                model="models/gemini-embedding-001",
-                content=text,
-                task_type="retrieval_query"
-            )["embedding"]
+            result = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY"
+                )
+            )
 
-            embeddings.append(embedding)
+            embeddings.append(
+                result.embeddings[0].values
+            )
+
+        elapsed = time.time() - start
+
+        print(
+            f"Query embedding time: {elapsed:.2f}s"
+        )
 
         return embeddings
 
@@ -137,13 +162,21 @@ class GeminiEmbeddingFunction:
 # CREATE CHROMADB COLLECTION
 # =========================================================
 
-def create_chroma_db(documents: List[str], db_name: str):
+def create_chroma_db(
+    documents: List[str],
+    db_name: str
+):
+
+    start = time.time()
 
     chroma_client = chromadb.PersistentClient(
         path=chroma_settings.persist_directory
     )
 
+    # -----------------------------------------------------
     # Delete old collection
+    # -----------------------------------------------------
+
     try:
 
         chroma_client.delete_collection(
@@ -154,19 +187,31 @@ def create_chroma_db(documents: List[str], db_name: str):
 
         pass
 
+    # -----------------------------------------------------
     # Create new collection
+    # -----------------------------------------------------
+
     db = chroma_client.create_collection(
         name=db_name,
         embedding_function=GeminiEmbeddingFunction()
     )
 
+    # -----------------------------------------------------
     # Add documents
+    # -----------------------------------------------------
+
     for i, doc in enumerate(documents):
 
         db.add(
             documents=[doc],
             ids=[str(i)]
         )
+
+    elapsed = time.time() - start
+
+    print(
+        f"PDF / ChromaDB creation time: {elapsed:.2f}s"
+    )
 
     return db
 
@@ -175,16 +220,27 @@ def create_chroma_db(documents: List[str], db_name: str):
 # LOAD EXISTING CHROMADB COLLECTION
 # =========================================================
 
+@st.cache_resource
 def load_chroma_collection(db_name: str):
+
+    start = time.time()
 
     chroma_client = chromadb.PersistentClient(
         path=chroma_settings.persist_directory
     )
 
-    return chroma_client.get_collection(
+    db = chroma_client.get_collection(
         name=db_name,
         embedding_function=GeminiEmbeddingFunction()
     )
+
+    elapsed = time.time() - start
+
+    print(
+        f"ChromaDB collection load time: {elapsed:.2f}s"
+    )
+
+    return db
 
 
 # =========================================================
@@ -197,9 +253,17 @@ def get_relevant_passage(
     n_results: int
 ):
 
+    start = time.time()
+
     results = db.query(
         query_texts=[query],
         n_results=n_results
+    )
+
+    elapsed = time.time() - start
+
+    print(
+        f"ChromaDB retrieval time: {elapsed:.2f}s"
     )
 
     return [
@@ -247,18 +311,57 @@ ANSWER:
 
 
 # =========================================================
-# GENERATE GEMINI ANSWER
+# GENERATE GEMINI ANSWER - STREAMING
 # =========================================================
 
 def generate_answer(prompt: str):
 
-    model = genai.GenerativeModel(
-        "gemini-3.6-flash"
-    )
+    start = time.time()
 
-    result = model.generate_content(prompt)
+    try:
 
-    return result.text
+        chat = client.chats.create(
+            model="gemini-3.5-flash-lite"
+        )
+
+        response_stream = chat.send_message_stream(
+            message=prompt
+        )
+
+        elapsed = time.time() - start
+
+        print(
+            f"Gemini first response time: {elapsed:.2f}s"
+        )
+
+        return response_stream
+
+    except Exception:
+
+        raise
+
+
+# =========================================================
+# DISPLAY STREAMING ANSWER
+# =========================================================
+
+def display_streaming_answer(response_stream):
+
+    answer_placeholder = st.empty()
+
+    full_response = ""
+
+    for chunk in response_stream:
+
+        if chunk.text:
+
+            full_response += chunk.text
+
+            answer_placeholder.markdown(
+                full_response
+            )
+
+    return full_response
 
 
 # =========================================================
@@ -305,7 +408,10 @@ def main():
 
                     try:
 
+                        # -------------------------------------------------
                         # Extract text
+                        # -------------------------------------------------
+
                         raw_text = get_pdf_text(
                             pdf_docs
                         )
@@ -318,16 +424,34 @@ def main():
 
                         else:
 
+                            # -------------------------------------------------
                             # Split text
+                            # -------------------------------------------------
+
                             text_chunks = split_text(
                                 raw_text
                             )
 
+                            print(
+                                f"Number of chunks: {len(text_chunks)}"
+                            )
+
+                            # -------------------------------------------------
                             # Create ChromaDB
+                            # -------------------------------------------------
+
                             create_chroma_db(
                                 text_chunks,
                                 db_name
                             )
+
+                            # -------------------------------------------------
+                            # Clear cached collection
+                            #
+                            # Important because we created a new collection.
+                            # -------------------------------------------------
+
+                            load_chroma_collection.clear()
 
                             st.success(
                                 "PDF processed successfully!"
@@ -396,9 +520,17 @@ def main():
 
             try:
 
+                # -------------------------------------------------
+                # Load cached ChromaDB collection
+                # -------------------------------------------------
+
                 db = load_chroma_collection(
                     db_name
                 )
+
+                # -------------------------------------------------
+                # Retrieve relevant passage
+                # -------------------------------------------------
 
                 relevant_text = get_relevant_passage(
                     user_question,
@@ -408,18 +540,31 @@ def main():
 
                 if relevant_text:
 
+                    # -------------------------------------------------
+                    # Create RAG prompt
+                    # -------------------------------------------------
+
                     final_prompt = make_rag_prompt(
                         user_question,
                         "".join(relevant_text)
                     )
 
-                    answer = generate_answer(
+                    # -------------------------------------------------
+                    # Generate streaming answer
+                    # -------------------------------------------------
+
+                    response_stream = generate_answer(
                         final_prompt
                     )
 
-                    st.write(
-                        "Reply:",
-                        answer
+                    # -------------------------------------------------
+                    # Display streaming answer
+                    # -------------------------------------------------
+
+                    st.write("Reply:")
+
+                    display_streaming_answer(
+                        response_stream
                     )
 
                 else:
@@ -454,13 +599,22 @@ Answer:
 
             try:
 
-                answer = generate_answer(
+                # -------------------------------------------------
+                # Generate streaming answer
+                # -------------------------------------------------
+
+                response_stream = generate_answer(
                     prompt
                 )
 
-                st.write(
-                    "Reply:",
-                    answer
+                # -------------------------------------------------
+                # Display streaming answer
+                # -------------------------------------------------
+
+                st.write("Reply:")
+
+                display_streaming_answer(
+                    response_stream
                 )
 
             except Exception as e:
@@ -475,4 +629,5 @@ Answer:
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
