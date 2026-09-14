@@ -1,4 +1,5 @@
 pipeline {
+
     agent any
 
     environment {
@@ -62,6 +63,8 @@ pipeline {
         stage('Clone GitOps Repo') {
             steps {
                 dir('gitops') {
+                    deleteDir()
+
                     git(
                         credentialsId: 'github-pat',
                         url: 'https://github.com/adityarana021/rag-chatbot-gitops.git',
@@ -97,6 +100,7 @@ pipeline {
                             git config user.email "jenkins@localhost"
 
                             git add app/deployment.yaml
+
                             git commit -m "Update image to build-${BUILD_NUMBER}" || true
 
                             git push https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/adityarana021/rag-chatbot-gitops.git main
