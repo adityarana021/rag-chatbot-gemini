@@ -58,48 +58,51 @@ pipeline {
                 '''
             }
         }
-    }
-}
-stage('Clone GitOps Repo') {
-    steps {
-        dir('gitops') {
-            git(
-                credentialsId: 'github-pat',
-                url: 'https://github.com/adityarana021/rag-chatbot-gitops.git',
-                branch: 'main'
-            )
+
+        stage('Clone GitOps Repo') {
+            steps {
+                dir('gitops') {
+                    git(
+                        credentialsId: 'github-pat',
+                        url: 'https://github.com/adityarana021/rag-chatbot-gitops.git',
+                        branch: 'main'
+                    )
+                }
+            }
         }
-    }
-}
-stage('Update Image Tag') {
-    steps {
-        dir('gitops') {
-            sh """
-                sed -i 's|image: .*|image: 127372371582.dkr.ecr.us-east-1.amazonaws.com/rag-chatbot:build-${BUILD_NUMBER}|' app/deployment.yaml
 
-                echo "Updated deployment:"
-                grep 'image:' app/deployment.yaml
-            """
+        stage('Update Image Tag') {
+            steps {
+                dir('gitops') {
+                    sh """
+                        sed -i 's|image: .*|image: ${ECR_REPOSITORY}:${IMAGE_TAG}|' app/deployment.yaml
+
+                        echo "Updated deployment:"
+                        grep 'image:' app/deployment.yaml
+                    """
+                }
+            }
         }
-    }
-}
-stage('Push GitOps Changes') {
-    steps {
-        dir('gitops') {
-            withCredentials([usernamePassword(
-                credentialsId: 'github-pat',
-                usernameVariable: 'GITHUB_USER',
-                passwordVariable: 'GITHUB_TOKEN'
-            )]) {
-                sh '''
-                    git config user.name "Jenkins"
-                    git config user.email "jenkins@localhost"
 
-                    git add app/deployment.yaml
-                    git commit -m "Update image to build-${BUILD_NUMBER}" || true
+        stage('Push GitOps Changes') {
+            steps {
+                dir('gitops') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'github-pat',
+                        usernameVariable: 'GITHUB_USER',
+                        passwordVariable: 'GITHUB_TOKEN'
+                    )]) {
+                        sh '''
+                            git config user.name "Jenkins"
+                            git config user.email "jenkins@localhost"
 
-                    git push https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/adityarana021/rag-chatbot-gitops.git main
-                '''
+                            git add app/deployment.yaml
+                            git commit -m "Update image to build-${BUILD_NUMBER}" || true
+
+                            git push https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/adityarana021/rag-chatbot-gitops.git main
+                        '''
+                    }
+                }
             }
         }
     }
